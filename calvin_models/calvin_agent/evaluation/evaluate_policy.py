@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import sys
 import time
+import requests
+import json
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -36,7 +38,7 @@ from calvin_env.envs.play_table_env import get_env
 logger = logging.getLogger(__name__)
 
 EP_LEN = 360
-NUM_SEQUENCES = 1000
+NUM_SEQUENCES = 10 #1000
 
 
 def make_env(dataset_path):
@@ -50,14 +52,12 @@ def make_env(dataset_path):
 
 class CustomModel(CalvinBaseModel):
     def __init__(self):
-        logger.warning("Please implement these methods as an interface to your custom model architecture.")
-        raise NotImplementedError
+        response = requests.get("http://127.0.0.1:5000/init")
+        assert response.text == "ok"
 
     def reset(self):
-        """
-        This is called
-        """
-        raise NotImplementedError
+        response = requests.get("http://127.0.0.1:5000/reset")
+        assert response.text == "ok"
 
     def step(self, obs, goal):
         """
@@ -67,10 +67,20 @@ class CustomModel(CalvinBaseModel):
         Returns:
             action: predicted action
         """
-        raise NotImplementedError
+        rgb_obs = obs["rgb_obs"]["rgb_static"]
+        model_input = {
+            "language_command" : goal,
+            "image_obs" : rgb_obs.tolist()
+        }
+        model_input_str = json.dumps(model_input)
+        params = {"model_input" : model_input_str}
+        response = requests.get("http://127.0.0.1:5000/step", params=params)
+        response_text = response.text
+        action_cmd = np.array(json.loads(response_text))
+        return action_cmd
 
 
-def evaluate_policy(model, env, epoch, eval_log_dir=None, debug=False, create_plan_tsne=False):
+def evaluate_policy(model, env, epoch=0, eval_log_dir=None, debug=False, create_plan_tsne=False):
     """
     Run this function to evaluate a model on the CALVIN challenge.
 
