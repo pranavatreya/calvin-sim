@@ -74,7 +74,7 @@ class CustomModel(CalvinBaseModel):
         }
         model_input_str = json.dumps(model_input)
         params = {"model_input" : model_input_str}
-        response = requests.get("http://127.0.0.1:5000/step", params=params)
+        response = requests.post("http://127.0.0.1:5000/step", json=params)
         response_text = response.text
         action_cmd = np.array(json.loads(response_text))
         return action_cmd
