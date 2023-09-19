@@ -7,6 +7,7 @@ import sys
 import time
 import requests
 import json
+import cv2
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -32,6 +33,7 @@ from pytorch_lightning import seed_everything
 from termcolor import colored
 import torch
 from tqdm.auto import tqdm
+from PIL import Image
 
 from calvin_env.envs.play_table_env import get_env
 
@@ -51,13 +53,30 @@ def make_env(dataset_path):
 
 
 class CustomModel(CalvinBaseModel):
-    def __init__(self):
+    def __init__(self, visualize_trajectory=False):
         response = requests.get("http://127.0.0.1:5000/init")
         assert response.text == "ok"
+
+        self.visualize_trajectory = visualize_trajectory
+        if visualize_trajectory:
+            self.image_seq = None
+            self.goal_image = np.load("/nfs/kun2/users/pranav/calvin-sim/check_if_gcbc_trained/goal_image.npy")
 
     def reset(self):
         response = requests.get("http://127.0.0.1:5000/reset")
         assert response.text == "ok"
+
+        if self.visualize_trajectory:
+            if self.image_seq is not None:
+                # save trajectory as video to disk
+                size = (200, 200)
+                out = cv2.VideoWriter("/nfs/kun2/users/pranav/calvin-sim/check_if_gcbc_trained/trajectory.mp4", cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+                for i in range(len(self.image_seq)):
+                    rgb_img = cv2.cvtColor(self.image_seq[i], cv2.COLOR_RGB2BGR)
+                    out.write(rgb_img)
+                out.release()
+                # we've finished one trajectory, so terminate
+                exit()
 
     def step(self, obs, goal):
         """
@@ -68,10 +87,25 @@ class CustomModel(CalvinBaseModel):
             action: predicted action
         """
         rgb_obs = obs["rgb_obs"]["rgb_static"]
+
+        #np.save("/nfs/kun2/users/pranav/calvin-sim/check_if_gcbc_trained/goal_image.npy", rgb_obs)
+        #im = Image.fromarray(rgb_obs)
+        #im.save("/nfs/kun2/users/pranav/calvin-sim/check_if_gcbc_trained/goal_image.jpg")
+        #exit()
+
+        # If visualizing, save image observation
+        if self.visualize_trajectory:
+            if self.image_seq is None:
+                self.image_seq = []
+            self.image_seq.append(rgb_obs)
+
+        # Query the model
         model_input = {
             "language_command" : goal,
             "image_obs" : rgb_obs.tolist()
         }
+        if self.visualize_trajectory:
+            model_input["goal_image"] = self.goal_image.tolist()
         model_input_str = json.dumps(model_input)
         params = {"model_input" : model_input_str}
         response = requests.post("http://127.0.0.1:5000/step", json=params)
@@ -129,6 +163,11 @@ def evaluate_sequence(env, model, task_checker, initial_state, eval_sequence, va
     """
     Evaluates a sequence of language instructions.
     """
+    #print("###########")
+    #print(type(initial_state))
+    #print(initial_state.keys())
+    #print(initial_state)
+    #initial_state["drawer"] = "open"
     robot_obs, scene_obs = get_env_state_for_initial_condition(initial_state)
     env.reset(robot_obs=robot_obs, scene_obs=scene_obs)
 
@@ -156,6 +195,7 @@ def rollout(env, model, task_oracle, subtask, val_annotations, plans, debug):
         print(f"{subtask} ", end="")
         time.sleep(0.5)
     obs = env.get_obs()
+
     # get lang annotation for subtask
     lang_annotation = val_annotations[subtask][0]
     model.reset()
@@ -224,7 +264,7 @@ def main():
 
     # evaluate a custom model
     if args.custom_model:
-        model = CustomModel()
+        model = CustomModel(visualize_trajectory=True)
         env = make_env(args.dataset_path)
         evaluate_policy(model, env, debug=args.debug)
     else:
