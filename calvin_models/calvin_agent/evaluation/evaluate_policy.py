@@ -53,30 +53,87 @@ def make_env(dataset_path):
 
 
 class CustomModel(CalvinBaseModel):
-    def __init__(self, visualize_trajectory=False):
+    def __init__(self):
+        # Initialize GCBC
         response = requests.get("http://127.0.0.1:5000/init")
         assert response.text == "ok"
 
-        self.visualize_trajectory = visualize_trajectory
-        if visualize_trajectory:
-            self.image_seq = None
-            self.goal_image = np.load("/nfs/kun2/users/pranav/calvin-sim/check_if_gcbc_trained/goal_image.npy")
+        # Initialize diffusion model
+        response = requests.get("http://127.0.0.1:5001/init")
+        assert response.text == "ok"
+
+        # For each eval episode we need to log the following:
+        #   (1) language task
+        #   (2) sequence of image observations as a video
+        #   (3) sequence of diffusion model generations also as a video, timed with (2)
+        #   (4) sequence of actions as numpy array
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/subgoal-diffusion-60"
+        self.episode_counter = None
+        self.language_task = None
+        self.obs_image_seq = None
+        self.goal_image_seq = None
+        self.action_seq = None
+        self.combined_images = None
+
+        # Other necessary variables for running rollouts
+        self.goal_image = None
+        self.subgoal_counter = 0
+        self.subgoal_max = 20
 
     def reset(self):
         response = requests.get("http://127.0.0.1:5000/reset")
         assert response.text == "ok"
 
-        if self.visualize_trajectory:
-            if self.image_seq is not None:
-                # save trajectory as video to disk
-                size = (200, 200)
-                out = cv2.VideoWriter("/nfs/kun2/users/pranav/calvin-sim/check_if_gcbc_trained/trajectory.mp4", cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
-                for i in range(len(self.image_seq)):
-                    rgb_img = cv2.cvtColor(self.image_seq[i], cv2.COLOR_RGB2BGR)
-                    out.write(rgb_img)
-                out.release()
-                # we've finished one trajectory, so terminate
-                exit()
+        if self.episode_counter is None: # this is the first time reset has been called
+            self.episode_counter = 0
+            self.obs_image_seq = []
+            self.goal_image_seq = []
+            self.action_seq = []
+            self.combined_images = []
+        else:
+            episode_log_dir = os.path.join(self.log_dir, "ep" + str(self.episode_counter))
+            if not os.path.exists(episode_log_dir):
+                os.makedirs(episode_log_dir)
+
+            # Log the language task
+            with open(os.path.join(episode_log_dir, "language_task.txt"), "w") as f:
+                f.write(self.language_task)
+            
+            # Log the observation video
+            size = (200, 200)
+            out = cv2.VideoWriter(os.path.join(episode_log_dir, "trajectory.mp4"), cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+            for i in range(len(self.obs_image_seq)):
+                rgb_img = cv2.cvtColor(self.obs_image_seq[i], cv2.COLOR_RGB2BGR)
+                out.write(rgb_img)
+            out.release()
+
+            # Log the goals video
+            size = (200, 200)
+            out = cv2.VideoWriter(os.path.join(episode_log_dir, "goals.mp4"), cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+            for i in range(len(self.goal_image_seq)):
+                rgb_img = cv2.cvtColor(self.goal_image_seq[i], cv2.COLOR_RGB2BGR)
+                out.write(rgb_img)
+            out.release()
+
+            # Log the combined image
+            size = (400, 200)
+            out = cv2.VideoWriter(os.path.join(episode_log_dir, "combined.mp4"), cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+            for i in range(len(self.combined_images)):
+                rgb_img = cv2.cvtColor(self.combined_images[i], cv2.COLOR_RGB2BGR)
+                out.write(rgb_img)
+            out.release()
+
+            # Log the actions
+            np.save(os.path.join(episode_log_dir, "actions.npy"), np.array(self.action_seq))
+
+            # Update/reset all the variables
+            self.episode_counter += 1
+            self.obs_image_seq = []
+            self.goal_image_seq = []
+            self.action_seq = []
+            self.goal_image = None
+            self.combined_images = []
+            self.subgoal_counter = 0
 
     def step(self, obs, goal):
         """
@@ -87,30 +144,45 @@ class CustomModel(CalvinBaseModel):
             action: predicted action
         """
         rgb_obs = obs["rgb_obs"]["rgb_static"]
+        self.language_task = goal
 
-        #np.save("/nfs/kun2/users/pranav/calvin-sim/check_if_gcbc_trained/goal_image.npy", rgb_obs)
-        #im = Image.fromarray(rgb_obs)
-        #im.save("/nfs/kun2/users/pranav/calvin-sim/check_if_gcbc_trained/goal_image.jpg")
-        #exit()
+        # If we need to, generate a new goal image
+        if self.goal_image is None or self.subgoal_counter >= self.subgoal_max:
+            diffusion_model_input = {
+                "language_command" : self.language_task,
+                "image_obs" : rgb_obs.tolist()
+            }
+            diffusion_model_input_str = json.dumps(diffusion_model_input)
+            params = {"model_input" : diffusion_model_input_str}
+            response = requests.post("http://127.0.0.1:5001/generate", json=params)
+            response_text = response.text
+            self.goal_image = np.array(json.loads(response_text), dtype=np.uint8)
+            self.subgoal_counter = 0
 
-        # If visualizing, save image observation
-        if self.visualize_trajectory:
-            if self.image_seq is None:
-                self.image_seq = []
-            self.image_seq.append(rgb_obs)
+        # Log the image observation and the goal image
+        self.obs_image_seq.append(rgb_obs)
+        self.goal_image_seq.append(self.goal_image)
+        self.combined_images.append(np.concatenate([rgb_obs, self.goal_image], axis=1))
+        assert self.combined_images[-1].shape == (200, 400, 3)
 
-        # Query the model
+        # Query the behavior cloning model
         model_input = {
-            "language_command" : goal,
-            "image_obs" : rgb_obs.tolist()
+            "language_command" : self.language_task,
+            "image_obs" : rgb_obs.tolist(),
+            "goal_image": self.goal_image.tolist()
         }
-        if self.visualize_trajectory:
-            model_input["goal_image"] = self.goal_image.tolist()
         model_input_str = json.dumps(model_input)
         params = {"model_input" : model_input_str}
         response = requests.post("http://127.0.0.1:5000/step", json=params)
         response_text = response.text
         action_cmd = np.array(json.loads(response_text))
+
+        # Log the predicted action
+        self.action_seq.append(action_cmd)
+
+        # Update variables
+        self.subgoal_counter += 1
+
         return action_cmd
 
 
@@ -264,7 +336,7 @@ def main():
 
     # evaluate a custom model
     if args.custom_model:
-        model = CustomModel(visualize_trajectory=True)
+        model = CustomModel()
         env = make_env(args.dataset_path)
         evaluate_policy(model, env, debug=args.debug)
     else:
