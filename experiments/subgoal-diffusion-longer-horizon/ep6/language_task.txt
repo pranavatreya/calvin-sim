@@ -1,0 +1,1 @@
+store the grasped block in the sliding cabinet
