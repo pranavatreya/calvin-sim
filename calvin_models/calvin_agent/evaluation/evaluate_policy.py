@@ -40,7 +40,7 @@ from calvin_env.envs.play_table_env import get_env
 logger = logging.getLogger(__name__)
 
 EP_LEN = 360
-NUM_SEQUENCES = 10 #1000
+NUM_SEQUENCES = 1 #1000
 
 
 def make_env(dataset_path):
@@ -67,7 +67,7 @@ class CustomModel(CalvinBaseModel):
         #   (2) sequence of image observations as a video
         #   (3) sequence of diffusion model generations also as a video, timed with (2)
         #   (4) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/subgoal-diffusion-60"
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/subgoal-diffusion-slack-2"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
