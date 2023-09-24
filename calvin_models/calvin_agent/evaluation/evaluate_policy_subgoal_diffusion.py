@@ -8,6 +8,8 @@ import time
 import requests
 import json
 import cv2
+from query_policy.diffusion_model import DiffusionModel
+from query_policy.gc_policy import GCPolicy
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -55,19 +57,17 @@ def make_env(dataset_path):
 class CustomModel(CalvinBaseModel):
     def __init__(self):
         # Initialize GCBC
-        response = requests.get("http://127.0.0.1:5000/init")
-        assert response.text == "ok"
+        self.gc_policy = GCPolicy()
 
         # Initialize diffusion model
-        response = requests.get("http://127.0.0.1:5001/init")
-        assert response.text == "ok"
+        self.diffusion_model = DiffusionModel()
 
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
         #   (3) sequence of diffusion model generations also as a video, timed with (2)
         #   (4) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/subgoal-diffusion-slack-2"
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/test-subgoal-diffusion"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
@@ -81,9 +81,6 @@ class CustomModel(CalvinBaseModel):
         self.subgoal_max = 20
 
     def reset(self):
-        response = requests.get("http://127.0.0.1:5000/reset")
-        assert response.text == "ok"
-
         if self.episode_counter is None: # this is the first time reset has been called
             self.episode_counter = 0
             self.obs_image_seq = []
@@ -148,15 +145,7 @@ class CustomModel(CalvinBaseModel):
 
         # If we need to, generate a new goal image
         if self.goal_image is None or self.subgoal_counter >= self.subgoal_max:
-            diffusion_model_input = {
-                "language_command" : self.language_task,
-                "image_obs" : rgb_obs.tolist()
-            }
-            diffusion_model_input_str = json.dumps(diffusion_model_input)
-            params = {"model_input" : diffusion_model_input_str}
-            response = requests.post("http://127.0.0.1:5001/generate", json=params)
-            response_text = response.text
-            self.goal_image = np.array(json.loads(response_text), dtype=np.uint8)
+            self.goal_image = self.diffusion_model.generate(self.language_task, rgb_obs)
             self.subgoal_counter = 0
 
         # Log the image observation and the goal image
@@ -166,16 +155,7 @@ class CustomModel(CalvinBaseModel):
         assert self.combined_images[-1].shape == (200, 400, 3)
 
         # Query the behavior cloning model
-        model_input = {
-            "language_command" : self.language_task,
-            "image_obs" : rgb_obs.tolist(),
-            "goal_image": self.goal_image.tolist()
-        }
-        model_input_str = json.dumps(model_input)
-        params = {"model_input" : model_input_str}
-        response = requests.post("http://127.0.0.1:5000/step", json=params)
-        response_text = response.text
-        action_cmd = np.array(json.loads(response_text))
+        action_cmd = self.gc_policy.predict_action(rgb_obs, self.goal_image)
 
         # Log the predicted action
         self.action_seq.append(action_cmd)

@@ -8,6 +8,8 @@ import time
 import requests
 import json
 import cv2
+import socket
+from tqdm import tqdm
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -39,8 +41,8 @@ from calvin_env.envs.play_table_env import get_env
 
 logger = logging.getLogger(__name__)
 
-EP_LEN = 1000
-NUM_SEQUENCES = 20 #1000
+EP_LEN = 360
+NUM_SEQUENCES = 15 #1000
 
 
 def make_env(dataset_path):
@@ -55,23 +57,27 @@ def make_env(dataset_path):
 class CustomModel(CalvinBaseModel):
     def __init__(self):
         # Initialize LCBC
-        response = requests.get("http://127.0.0.1:5002/init")
-        assert response.text == "ok"
+        self.host = 'localhost'
+        self.port = 5002
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((self.host, self.port))
+            s.sendall(json.dumps({'function': 'initialize'}).encode())
+            data = s.recv(1024)
+        data_str = data.decode("utf-8")[1:-1] # remove "-mark at the beginning and end
+        assert data_str == "ok"
 
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
         #   (3) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/language_conditioned_baseline"
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/language_conditioned_sockets"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
         self.action_seq = None
+        self.pbar = None
 
     def reset(self):
-        response = requests.get("http://127.0.0.1:5002/reset")
-        assert response.text == "ok"
-
         if self.episode_counter is None: # this is the first time reset has been called
             self.episode_counter = 0
             self.obs_image_seq = []
@@ -101,6 +107,11 @@ class CustomModel(CalvinBaseModel):
             self.obs_image_seq = []
             self.action_seq = []
 
+        # tqdm progress bar
+        if self.pbar is not None:
+            self.pbar.close()
+        self.pbar = tqdm(total=EP_LEN)
+
     def step(self, obs, goal):
         """
         Args:
@@ -120,14 +131,19 @@ class CustomModel(CalvinBaseModel):
             "language_command" : self.language_task,
             "image_obs" : rgb_obs.tolist(),
         }
-        model_input_str = json.dumps(model_input)
-        params = {"model_input" : model_input_str}
-        response = requests.post("http://127.0.0.1:5002/step", json=params)
-        response_text = response.text
-        action_cmd = np.array(json.loads(response_text))
+        data_str = json.dumps(model_input)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((self.host, self.port))
+            s.sendall(json.dumps({'function': 'step', 'data': data_str}).encode())
+            data = s.recv(10000000)
+        data_str = data.decode("utf-8")
+        action_cmd = np.array(json.loads(data_str))
 
         # Log the predicted action
         self.action_seq.append(action_cmd)
+
+        # Update progress bar
+        self.pbar.update(1)
 
         return action_cmd
 
