@@ -8,8 +8,9 @@ import time
 import requests
 import json
 import cv2
-from query_policy.diffusion_model import DiffusionModel
-from query_policy.gc_policy import GCPolicy
+from tqdm import tqdm
+import jax_diffusion_model
+import gc_policy
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -42,7 +43,7 @@ from calvin_env.envs.play_table_env import get_env
 logger = logging.getLogger(__name__)
 
 EP_LEN = 360
-NUM_SEQUENCES = 10 #1000
+NUM_SEQUENCES = 26 #1000
 
 
 def make_env(dataset_path):
@@ -56,18 +57,18 @@ def make_env(dataset_path):
 
 class CustomModel(CalvinBaseModel):
     def __init__(self):
-        # Initialize GCBC
-        self.gc_policy = GCPolicy()
-
         # Initialize diffusion model
-        self.diffusion_model = DiffusionModel()
+        self.diffusion_model = jax_diffusion_model.DiffusionModel()
+
+        # Initialize GCBC
+        self.gc_policy = gc_policy.GCPolicy()
 
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
         #   (3) sequence of diffusion model generations also as a video, timed with (2)
         #   (4) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/test-subgoal-diffusion"
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/jax_diffusion_model"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
@@ -79,6 +80,7 @@ class CustomModel(CalvinBaseModel):
         self.goal_image = None
         self.subgoal_counter = 0
         self.subgoal_max = 20
+        self.pbar = None
 
     def reset(self):
         if self.episode_counter is None: # this is the first time reset has been called
@@ -132,6 +134,11 @@ class CustomModel(CalvinBaseModel):
             self.combined_images = []
             self.subgoal_counter = 0
 
+        # tqdm progress bar
+        if self.pbar is not None:
+            self.pbar.close()
+        self.pbar = tqdm(total=EP_LEN)
+
     def step(self, obs, goal):
         """
         Args:
@@ -162,6 +169,9 @@ class CustomModel(CalvinBaseModel):
 
         # Update variables
         self.subgoal_counter += 1
+
+        # Update progress bar
+        self.pbar.update(1)
 
         return action_cmd
 

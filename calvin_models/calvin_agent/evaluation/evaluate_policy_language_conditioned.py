@@ -8,8 +8,8 @@ import time
 import requests
 import json
 import cv2
-import socket
 from tqdm import tqdm
+import lc_policy
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -41,8 +41,8 @@ from calvin_env.envs.play_table_env import get_env
 
 logger = logging.getLogger(__name__)
 
-EP_LEN = 360
-NUM_SEQUENCES = 15 #1000
+EP_LEN = 1000
+NUM_SEQUENCES = 26 #1000
 
 
 def make_env(dataset_path):
@@ -57,20 +57,13 @@ def make_env(dataset_path):
 class CustomModel(CalvinBaseModel):
     def __init__(self):
         # Initialize LCBC
-        self.host = 'localhost'
-        self.port = 5002
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((self.host, self.port))
-            s.sendall(json.dumps({'function': 'initialize'}).encode())
-            data = s.recv(1024)
-        data_str = data.decode("utf-8")[1:-1] # remove "-mark at the beginning and end
-        assert data_str == "ok"
+        self.lc_policy = lc_policy.LCPolicy()
 
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
         #   (3) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/language_conditioned_sockets"
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/test_lcbc_1000_26"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
@@ -127,17 +120,7 @@ class CustomModel(CalvinBaseModel):
         self.obs_image_seq.append(rgb_obs)
 
         # Query the behavior cloning model
-        model_input = {
-            "language_command" : self.language_task,
-            "image_obs" : rgb_obs.tolist(),
-        }
-        data_str = json.dumps(model_input)
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((self.host, self.port))
-            s.sendall(json.dumps({'function': 'step', 'data': data_str}).encode())
-            data = s.recv(10000000)
-        data_str = data.decode("utf-8")
-        action_cmd = np.array(json.loads(data_str))
+        action_cmd = self.lc_policy.predict_action(self.language_task, rgb_obs)
 
         # Log the predicted action
         self.action_seq.append(action_cmd)
