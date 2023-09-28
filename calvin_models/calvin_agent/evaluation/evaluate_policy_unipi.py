@@ -9,7 +9,8 @@ import requests
 import json
 import cv2
 from tqdm import tqdm
-import lc_policy
+import unipi_inference
+import gc_policy
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -42,7 +43,7 @@ from calvin_env.envs.play_table_env import get_env
 logger = logging.getLogger(__name__)
 
 EP_LEN = 360
-NUM_SEQUENCES = 100 #1000
+NUM_SEQUENCES = 25 #1000
 
 
 def make_env(dataset_path):
@@ -56,25 +57,39 @@ def make_env(dataset_path):
 
 class CustomModel(CalvinBaseModel):
     def __init__(self):
-        # Initialize LCBC
-        self.lc_policy = lc_policy.LCPolicy()
+        # Initialize diffusion model
+        self.video_diffusion_model = unipi_inference.VideoDiffusionModel()
+
+        # Initialize GCBC
+        self.gc_policy = gc_policy.GCPolicy()
 
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
-        #   (3) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/final_lcbc"
+        #   (3) sequence of diffusion model generations also as a video, timed with (2)
+        #   (4) sequence of actions as numpy array
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/unipi_25"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
+        self.goal_image_seq = None
         self.action_seq = None
+        self.combined_images = None
+
+        # Other necessary variables for running rollouts
+        self.video_buffer = None
+        self.action_buffer = None
         self.pbar = None
 
     def reset(self):
         if self.episode_counter is None: # this is the first time reset has been called
             self.episode_counter = 0
             self.obs_image_seq = []
+            self.goal_image_seq = []
             self.action_seq = []
+            self.combined_images = []
+            self.video_buffer = []
+            self.action_buffer = []
         else:
             episode_log_dir = os.path.join(self.log_dir, "ep" + str(self.episode_counter))
             if not os.path.exists(episode_log_dir):
@@ -92,13 +107,33 @@ class CustomModel(CalvinBaseModel):
                 out.write(rgb_img)
             out.release()
 
+            # Log the goals video
+            size = (200, 200)
+            out = cv2.VideoWriter(os.path.join(episode_log_dir, "goals.mp4"), cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+            for i in range(len(self.goal_image_seq)):
+                rgb_img = cv2.cvtColor(self.goal_image_seq[i], cv2.COLOR_RGB2BGR)
+                out.write(rgb_img)
+            out.release()
+
+            # Log the combined image
+            size = (400, 200)
+            out = cv2.VideoWriter(os.path.join(episode_log_dir, "combined.mp4"), cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+            for i in range(len(self.combined_images)):
+                rgb_img = cv2.cvtColor(self.combined_images[i], cv2.COLOR_RGB2BGR)
+                out.write(rgb_img)
+            out.release()
+
             # Log the actions
             np.save(os.path.join(episode_log_dir, "actions.npy"), np.array(self.action_seq))
 
             # Update/reset all the variables
             self.episode_counter += 1
             self.obs_image_seq = []
+            self.goal_image_seq = []
             self.action_seq = []
+            self.video_buffer = []
+            self.action_buffer = []
+            self.combined_images = []
 
         # tqdm progress bar
         if self.pbar is not None:
@@ -116,11 +151,29 @@ class CustomModel(CalvinBaseModel):
         rgb_obs = obs["rgb_obs"]["rgb_static"]
         self.language_task = goal
 
-        # Log the image observation
-        self.obs_image_seq.append(rgb_obs)
+        # If we need to, generate a new video sequence
+        if len(self.video_buffer) == 0:
+            video_generation = self.video_diffusion_model.predict_video_sequence(self.language_task, rgb_obs)
+            # For a 10-timestep video, we only get 9 actions
+            for i, frame in enumerate(video_generation):
+                if i != 0:
+                    self.video_buffer.append(frame)
+            for img, next_img in zip(video_generation[:-1], video_generation[1:]):
+                # Query the behavior cloning model
+                action_cmd = self.gc_policy.predict_action(img, next_img)
+                self.action_buffer.append(action_cmd)
 
-        # Query the behavior cloning model
-        action_cmd = self.lc_policy.predict_action(self.language_task, rgb_obs)
+        # Extract the next action and image generation
+        action_cmd = self.action_buffer[0]
+        self.action_buffer = self.action_buffer[1:]
+        image_generation = self.video_buffer[0]
+        self.video_buffer = self.video_buffer[1:]
+
+        # Log the image observation and the goal image
+        self.obs_image_seq.append(rgb_obs)
+        self.goal_image_seq.append(image_generation)
+        self.combined_images.append(np.concatenate([rgb_obs, image_generation], axis=1))
+        assert self.combined_images[-1].shape == (200, 400, 3)
 
         # Log the predicted action
         self.action_seq.append(action_cmd)

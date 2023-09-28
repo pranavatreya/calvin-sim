@@ -9,7 +9,6 @@ import requests
 import json
 import cv2
 from tqdm import tqdm
-import lc_policy
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -42,7 +41,7 @@ from calvin_env.envs.play_table_env import get_env
 logger = logging.getLogger(__name__)
 
 EP_LEN = 360
-NUM_SEQUENCES = 100 #1000
+NUM_SEQUENCES = 1000 #1000
 
 
 def make_env(dataset_path):
@@ -56,14 +55,11 @@ def make_env(dataset_path):
 
 class CustomModel(CalvinBaseModel):
     def __init__(self):
-        # Initialize LCBC
-        self.lc_policy = lc_policy.LCPolicy()
-
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
         #   (3) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/final_lcbc"
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/dummy_log_dir"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
@@ -116,11 +112,17 @@ class CustomModel(CalvinBaseModel):
         rgb_obs = obs["rgb_obs"]["rgb_static"]
         self.language_task = goal
 
+        # Immediately save the image to disk and exit
+        #img = Image.fromarray(rgb_obs.astype(np.uint8))
+        #img.save("/nfs/kun2/users/pranav/calvin-sim/initial_state_images/initial_state_8.png")
+        #exit()
+
         # Log the image observation
         self.obs_image_seq.append(rgb_obs)
 
         # Query the behavior cloning model
-        action_cmd = self.lc_policy.predict_action(self.language_task, rgb_obs)
+        action_cmd = np.random.rand(7)
+        action_cmd[-1] = 1
 
         # Log the predicted action
         self.action_seq.append(action_cmd)
@@ -185,6 +187,16 @@ def evaluate_sequence(env, model, task_checker, initial_state, eval_sequence, va
     #print(initial_state.keys())
     #print(initial_state)
     #initial_state["drawer"] = "open"
+
+    # We will sample an initial state from the set of possible initial states, and render it
+    set_of_initial_states_f = open("/nfs/kun2/users/pranav/calvin-sim/initial_states.json")
+    set_of_initial_states = json.load(set_of_initial_states_f)
+    set_of_initial_states_f.close()
+    import random
+    from datetime import datetime
+    random.seed(datetime.now().timestamp())
+    initial_state = random.choice(set_of_initial_states)
+
     robot_obs, scene_obs = get_env_state_for_initial_condition(initial_state)
     env.reset(robot_obs=robot_obs, scene_obs=scene_obs)
 
@@ -217,6 +229,12 @@ def rollout(env, model, task_oracle, subtask, val_annotations, plans, debug):
     lang_annotation = val_annotations[subtask][0]
     model.reset()
     start_info = env.get_info()
+
+    print("########")
+    with open("/nfs/kun2/users/pranav/calvin-sim/dump.txt", "w") as f:
+        json.dump(start_info, f, indent=4)
+    print(subtask)
+    exit()
 
     for step in range(EP_LEN):
         action = model.step(obs, lang_annotation)

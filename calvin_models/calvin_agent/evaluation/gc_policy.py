@@ -113,12 +113,13 @@ class GCPolicy:
         )
 
         print("Loading checkpoint...") 
+        resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/second_one_step_policy_20230926_172301/checkpoint_104000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/smaller_resnet_20230925_151415/checkpoint_56000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/gcbc_on_full_goals_0_to_24_no_norm_20230925_140622/checkpoint_70000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/gcbc_on_lcbc_goals_0_to_24_no_norm_20230925_135330/checkpoint_48000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/silver_ticket_20230925_021808/checkpoint_30000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/golden_ticket_20230925_021423/checkpoint_24000/"
-        resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/gcbc_on_lcbc_20230921_003748/checkpoint_46000/"
+        #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/gcbc_on_lcbc_20230921_003748/checkpoint_46000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/gcbc_bounded_goal_horizon_20230922_004655/checkpoint_34000/"
         restored = orbax.checkpoint.PyTreeCheckpointer().restore(resume_path, item=agent)
         if agent is restored:
