@@ -41,7 +41,8 @@ class VideoDiffusionModel:
         self.rng = jax.random.PRNGKey(0)
         self.model_def = create_model_def(self.config.model, self.config.model_type)
         
-        resume_checkpoint = "/nfs/kun2/users/pranav/calvin-sim/calvin_models/calvin_agent/evaluation/downloads/video_diffusion/checkpoint_95000"
+        resume_checkpoint = "/nfs/kun2/users/pranav/checkpoints/checkpoint_200000"
+        #resume_checkpoint = "/nfs/kun2/users/pranav/calvin-sim/calvin_models/calvin_agent/evaluation/downloads/video_diffusion/checkpoint_95000"
         print("Loading checkpoint ...")
         self.params = orbax.checkpoint.PyTreeCheckpointer().restore(resume_checkpoint, item=None)["params_ema"]
         print("Loaded checkpoint")

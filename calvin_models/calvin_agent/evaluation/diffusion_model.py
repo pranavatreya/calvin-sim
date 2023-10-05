@@ -21,7 +21,7 @@ class DiffusionModel:
             requires_safety_checker=False,
             safety_checker=None,
         )
-        device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         generator = torch.Generator(device=device).manual_seed(0)
         diffusion_pipeline = diffusion_pipeline.to(device)
         diffusion_pipeline.set_progress_bar_config(disable=True)
@@ -40,7 +40,7 @@ class DiffusionModel:
             image=image_obs,
             num_inference_steps=200,
             image_guidance_scale=1.5,
-            guidance_scale=1.0,
+            guidance_scale=7.5,
             generator=self.generator,
         ).images[0]
 

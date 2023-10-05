@@ -9,6 +9,7 @@ import requests
 import json
 import cv2
 from tqdm import tqdm
+import true_gc_policy
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -40,8 +41,7 @@ from calvin_env.envs.play_table_env import get_env
 
 logger = logging.getLogger(__name__)
 
-EP_LEN = 360
-NUM_SEQUENCES = 10000 #1000
+EP_LEN = 150
 
 def make_env(dataset_path):
     val_folder = Path(dataset_path) / "validation"
@@ -54,22 +54,33 @@ def make_env(dataset_path):
 
 class CustomModel(CalvinBaseModel):
     def __init__(self):
+        # Initialize GCBC
+        self.gc_policy = true_gc_policy.GCPolicy()
+
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
-        #   (3) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/dummy_log_dir"
+        #   (3) sequence of diffusion model generations also as a video, timed with (2)
+        #   (4) sequence of actions as numpy array
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/upper_bound_ablation_true_gcbc/task7"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
+        self.goal_image_seq = None
         self.action_seq = None
+        self.combined_images = None
+
+        # Other necessary variables for running rollouts
+        self.goal_image = None
         self.pbar = None
 
-    def reset(self):
+    def reset(self, new_goal_image):
         if self.episode_counter is None: # this is the first time reset has been called
             self.episode_counter = 0
             self.obs_image_seq = []
+            self.goal_image_seq = []
             self.action_seq = []
+            self.combined_images = []
         else:
             episode_log_dir = os.path.join(self.log_dir, "ep" + str(self.episode_counter))
             if not os.path.exists(episode_log_dir):
@@ -87,18 +98,40 @@ class CustomModel(CalvinBaseModel):
                 out.write(rgb_img)
             out.release()
 
+            # Log the goals video
+            size = (200, 200)
+            out = cv2.VideoWriter(os.path.join(episode_log_dir, "goals.mp4"), cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+            for i in range(len(self.goal_image_seq)):
+                rgb_img = cv2.cvtColor(self.goal_image_seq[i], cv2.COLOR_RGB2BGR)
+                out.write(rgb_img)
+            out.release()
+
+            # Log the combined image
+            size = (400, 200)
+            out = cv2.VideoWriter(os.path.join(episode_log_dir, "combined.mp4"), cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+            for i in range(len(self.combined_images)):
+                rgb_img = cv2.cvtColor(self.combined_images[i], cv2.COLOR_RGB2BGR)
+                out.write(rgb_img)
+            out.release()
+
             # Log the actions
             np.save(os.path.join(episode_log_dir, "actions.npy"), np.array(self.action_seq))
 
             # Update/reset all the variables
             self.episode_counter += 1
             self.obs_image_seq = []
+            self.goal_image_seq = []
             self.action_seq = []
+            self.goal_image = None
+            self.combined_images = []
 
         # tqdm progress bar
         if self.pbar is not None:
             self.pbar.close()
         self.pbar = tqdm(total=EP_LEN)
+
+        # Set the goal image
+        self.goal_image = new_goal_image
 
     def step(self, obs, goal):
         """
@@ -111,17 +144,14 @@ class CustomModel(CalvinBaseModel):
         rgb_obs = obs["rgb_obs"]["rgb_static"]
         self.language_task = goal
 
-        # Immediately save the image to disk and exit
-        #img = Image.fromarray(rgb_obs.astype(np.uint8))
-        #img.save("/nfs/kun2/users/pranav/calvin-sim/initial_state_images/initial_state_8.png")
-        #exit()
-
-        # Log the image observation
+        # Log the image observation and the goal image
         self.obs_image_seq.append(rgb_obs)
+        self.goal_image_seq.append(self.goal_image)
+        self.combined_images.append(np.concatenate([rgb_obs, self.goal_image], axis=1))
+        assert self.combined_images[-1].shape == (200, 400, 3)
 
         # Query the behavior cloning model
-        action_cmd = np.random.rand(7)
-        action_cmd[-1] = 1
+        action_cmd = self.gc_policy.predict_action(rgb_obs, self.goal_image)
 
         # Log the predicted action
         self.action_seq.append(action_cmd)
@@ -153,39 +183,42 @@ def evaluate_policy(model, env, epoch=0, eval_log_dir=None, debug=False, create_
     val_annotations = OmegaConf.load(conf_dir / "annotations/new_playtable_validation.yaml")
 
     eval_log_dir = get_log_dir(eval_log_dir)
-
-    eval_sequences = get_sequences(NUM_SEQUENCES)
-
-    # For the 1000 sequences, obtain the set of all task ids for the first language instruction
-    # We will manually filter out ones that don't make sense (and we can make 1000->\infty)
-    subtasks = set()
-    for initial_state, eval_sequence in eval_sequences:
-        first_subtask = eval_sequence[0]
-        subtasks.add(first_subtask)
-    out_f = open("/nfs/kun2/users/pranav/calvin-sim/subtasks.json", "w")
-    json.dump(list(subtasks), out_f, indent=4)
-    out_f.close()
-    exit()
-
-    results = []
     plans = defaultdict(list)
 
-    if not debug:
-        eval_sequences = tqdm(eval_sequences, position=0, leave=True)
+    # Load the task_state_assignments json file
+    task_state_assignments_f = open("/nfs/kun2/users/pranav/calvin-sim/task_state_assignments.json")
+    task_state_assignments = json.load(task_state_assignments_f)
+    task_state_assignments_f.close()
 
-    for initial_state, eval_sequence in eval_sequences:
-        result = evaluate_sequence(env, model, task_oracle, initial_state, eval_sequence, val_annotations, plans, debug)
-        results.append(result)
-        if not debug:
-            eval_sequences.set_description(
-                " ".join([f"{i + 1}/5 : {v * 100:.1f}% |" for i, v in enumerate(count_success(results))]) + "|"
-            )
+    # Evaluate on task
+    task = "move_slider_left"
+    start_goal_pairs = task_state_assignments[task]
 
-    if create_plan_tsne:
-        create_tsne(plans, eval_log_dir, epoch)
-    print_and_save(results, eval_sequences, eval_log_dir, epoch)
+    # Choose 10 random start-goal pairs
+    import random
+    random.seed(42)
+    random.shuffle(start_goal_pairs)
 
-    return results
+    num_successes = 0
+    for i in range(10):
+        pair = start_goal_pairs[i]
+        start_state, goal_state = pair["start"], pair["goal"]
+
+        # Render the goal image
+        robot_obs, scene_obs = get_env_state_for_initial_condition(goal_state)
+        env.reset(robot_obs=robot_obs, scene_obs=scene_obs)
+        obs = env.get_obs()
+        goal_image = obs["rgb_obs"]["rgb_static"]
+
+        robot_obs, scene_obs = get_env_state_for_initial_condition(start_state)
+        env.reset(robot_obs=robot_obs, scene_obs=scene_obs)
+        success = rollout(env, model, task_oracle, task, val_annotations, plans, False, goal_image)
+        if success:
+            num_successes += 1
+    print("###################")
+    print(num_successes, "out of 10 succeeded")
+
+    exit() # lol
 
 
 def evaluate_sequence(env, model, task_checker, initial_state, eval_sequence, val_annotations, plans, debug):
@@ -197,16 +230,6 @@ def evaluate_sequence(env, model, task_checker, initial_state, eval_sequence, va
     #print(initial_state.keys())
     #print(initial_state)
     #initial_state["drawer"] = "open"
-
-    # We will sample an initial state from the set of possible initial states, and render it
-    #set_of_initial_states_f = open("/nfs/kun2/users/pranav/calvin-sim/initial_states.json")
-    #set_of_initial_states = json.load(set_of_initial_states_f)
-    #set_of_initial_states_f.close()
-    #import random
-    #from datetime import datetime
-    #random.seed(datetime.now().timestamp())
-    #initial_state = random.choice(set_of_initial_states)
-
     robot_obs, scene_obs = get_env_state_for_initial_condition(initial_state)
     env.reset(robot_obs=robot_obs, scene_obs=scene_obs)
 
@@ -226,7 +249,7 @@ def evaluate_sequence(env, model, task_checker, initial_state, eval_sequence, va
     return success_counter
 
 
-def rollout(env, model, task_oracle, subtask, val_annotations, plans, debug):
+def rollout(env, model, task_oracle, subtask, val_annotations, plans, debug, goal_image):
     """
     Run the actual rollout on one subtask (which is one natural language instruction).
     """
@@ -237,14 +260,8 @@ def rollout(env, model, task_oracle, subtask, val_annotations, plans, debug):
 
     # get lang annotation for subtask
     lang_annotation = val_annotations[subtask][0]
-    model.reset()
+    model.reset(goal_image)
     start_info = env.get_info()
-
-    #print("########")
-    #with open("/nfs/kun2/users/pranav/calvin-sim/dump.txt", "w") as f:
-    #    json.dump(start_info, f, indent=4)
-    #print(subtask)
-    #exit()
 
     for step in range(EP_LEN):
         action = model.step(obs, lang_annotation)

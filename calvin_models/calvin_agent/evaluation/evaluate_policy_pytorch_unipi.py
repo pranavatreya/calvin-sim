@@ -9,6 +9,8 @@ import requests
 import json
 import cv2
 from tqdm import tqdm
+import unipi_pytorch_inference
+#import gc_policy
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -41,7 +43,8 @@ from calvin_env.envs.play_table_env import get_env
 logger = logging.getLogger(__name__)
 
 EP_LEN = 360
-NUM_SEQUENCES = 10000 #1000
+NUM_SEQUENCES = 25 #1000
+GPU_IDX = 4
 
 def make_env(dataset_path):
     val_folder = Path(dataset_path) / "validation"
@@ -54,22 +57,40 @@ def make_env(dataset_path):
 
 class CustomModel(CalvinBaseModel):
     def __init__(self):
+        # Initialize diffusion model
+        self.video_diffusion_model = unipi_pytorch_inference.VideoDiffusionModel()
+
+        # Initialize GCBC
+        import gc_policy
+        self.gc_policy = gc_policy.GCPolicy()
+
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
-        #   (3) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/dummy_log_dir"
+        #   (3) sequence of diffusion model generations also as a video, timed with (2)
+        #   (4) sequence of actions as numpy array
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/unipi_pytorch_" + str(GPU_IDX)
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
+        self.goal_image_seq = None
         self.action_seq = None
+        self.combined_images = None
+
+        # Other necessary variables for running rollouts
+        self.video_buffer = None
+        self.action_buffer = None
         self.pbar = None
 
     def reset(self):
         if self.episode_counter is None: # this is the first time reset has been called
             self.episode_counter = 0
             self.obs_image_seq = []
+            self.goal_image_seq = []
             self.action_seq = []
+            self.combined_images = []
+            self.video_buffer = []
+            self.action_buffer = []
         else:
             episode_log_dir = os.path.join(self.log_dir, "ep" + str(self.episode_counter))
             if not os.path.exists(episode_log_dir):
@@ -87,13 +108,33 @@ class CustomModel(CalvinBaseModel):
                 out.write(rgb_img)
             out.release()
 
+            # Log the goals video
+            size = (200, 200)
+            out = cv2.VideoWriter(os.path.join(episode_log_dir, "goals.mp4"), cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+            for i in range(len(self.goal_image_seq)):
+                rgb_img = cv2.cvtColor(self.goal_image_seq[i], cv2.COLOR_RGB2BGR)
+                out.write(rgb_img)
+            out.release()
+
+            # Log the combined image
+            size = (400, 200)
+            out = cv2.VideoWriter(os.path.join(episode_log_dir, "combined.mp4"), cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
+            for i in range(len(self.combined_images)):
+                rgb_img = cv2.cvtColor(self.combined_images[i], cv2.COLOR_RGB2BGR)
+                out.write(rgb_img)
+            out.release()
+
             # Log the actions
             np.save(os.path.join(episode_log_dir, "actions.npy"), np.array(self.action_seq))
 
             # Update/reset all the variables
             self.episode_counter += 1
             self.obs_image_seq = []
+            self.goal_image_seq = []
             self.action_seq = []
+            self.video_buffer = []
+            self.action_buffer = []
+            self.combined_images = []
 
         # tqdm progress bar
         if self.pbar is not None:
@@ -111,17 +152,29 @@ class CustomModel(CalvinBaseModel):
         rgb_obs = obs["rgb_obs"]["rgb_static"]
         self.language_task = goal
 
-        # Immediately save the image to disk and exit
-        #img = Image.fromarray(rgb_obs.astype(np.uint8))
-        #img.save("/nfs/kun2/users/pranav/calvin-sim/initial_state_images/initial_state_8.png")
-        #exit()
+        # If we need to, generate a new video sequence
+        if len(self.video_buffer) == 0:
+            video_generation = self.video_diffusion_model.predict_video_sequence(self.language_task, rgb_obs)
+            # For a 16-timestep video, we only get 15 actions
+            for i, frame in enumerate(video_generation):
+                if i != 0:
+                    self.video_buffer.append(frame)
+            for img, next_img in zip(video_generation[:-1], video_generation[1:]):
+                # Query the behavior cloning model
+                action_cmd = self.gc_policy.predict_action(img, next_img)
+                self.action_buffer.append(action_cmd)
 
-        # Log the image observation
+        # Extract the next action and image generation
+        action_cmd = self.action_buffer[0]
+        self.action_buffer = self.action_buffer[1:]
+        image_generation = self.video_buffer[0]
+        self.video_buffer = self.video_buffer[1:]
+
+        # Log the image observation and the goal image
         self.obs_image_seq.append(rgb_obs)
-
-        # Query the behavior cloning model
-        action_cmd = np.random.rand(7)
-        action_cmd[-1] = 1
+        self.goal_image_seq.append(image_generation)
+        self.combined_images.append(np.concatenate([rgb_obs, image_generation], axis=1))
+        assert self.combined_images[-1].shape == (200, 400, 3)
 
         # Log the predicted action
         self.action_seq.append(action_cmd)
@@ -156,19 +209,11 @@ def evaluate_policy(model, env, epoch=0, eval_log_dir=None, debug=False, create_
 
     eval_sequences = get_sequences(NUM_SEQUENCES)
 
-    # For the 1000 sequences, obtain the set of all task ids for the first language instruction
-    # We will manually filter out ones that don't make sense (and we can make 1000->\infty)
-    subtasks = set()
-    for initial_state, eval_sequence in eval_sequences:
-        first_subtask = eval_sequence[0]
-        subtasks.add(first_subtask)
-    out_f = open("/nfs/kun2/users/pranav/calvin-sim/subtasks.json", "w")
-    json.dump(list(subtasks), out_f, indent=4)
-    out_f.close()
-    exit()
-
     results = []
     plans = defaultdict(list)
+
+    # Shard the work between gpus
+    eval_sequences = eval_sequences[5*GPU_IDX : 5*(GPU_IDX+1)]
 
     if not debug:
         eval_sequences = tqdm(eval_sequences, position=0, leave=True)
@@ -197,16 +242,6 @@ def evaluate_sequence(env, model, task_checker, initial_state, eval_sequence, va
     #print(initial_state.keys())
     #print(initial_state)
     #initial_state["drawer"] = "open"
-
-    # We will sample an initial state from the set of possible initial states, and render it
-    #set_of_initial_states_f = open("/nfs/kun2/users/pranav/calvin-sim/initial_states.json")
-    #set_of_initial_states = json.load(set_of_initial_states_f)
-    #set_of_initial_states_f.close()
-    #import random
-    #from datetime import datetime
-    #random.seed(datetime.now().timestamp())
-    #initial_state = random.choice(set_of_initial_states)
-
     robot_obs, scene_obs = get_env_state_for_initial_condition(initial_state)
     env.reset(robot_obs=robot_obs, scene_obs=scene_obs)
 
@@ -239,12 +274,6 @@ def rollout(env, model, task_oracle, subtask, val_annotations, plans, debug):
     lang_annotation = val_annotations[subtask][0]
     model.reset()
     start_info = env.get_info()
-
-    #print("########")
-    #with open("/nfs/kun2/users/pranav/calvin-sim/dump.txt", "w") as f:
-    #    json.dump(start_info, f, indent=4)
-    #print(subtask)
-    #exit()
 
     for step in range(EP_LEN):
         action = model.step(obs, lang_annotation)

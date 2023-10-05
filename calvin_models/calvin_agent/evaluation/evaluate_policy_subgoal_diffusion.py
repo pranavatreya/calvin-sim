@@ -9,7 +9,7 @@ import requests
 import json
 import cv2
 from tqdm import tqdm
-import diffusion_model
+import jax_diffusion_model
 import gc_policy
 
 # This is for using the locally installed repo clone when using slurm
@@ -42,8 +42,8 @@ from calvin_env.envs.play_table_env import get_env
 
 logger = logging.getLogger(__name__)
 
-EP_LEN = 1000
-NUM_SEQUENCES = 100 #1000
+EP_LEN = 360
+NUM_SEQUENCES = 26 #1000
 
 
 def make_env(dataset_path):
@@ -68,7 +68,7 @@ class CustomModel(CalvinBaseModel):
         #   (2) sequence of image observations as a video
         #   (3) sequence of diffusion model generations also as a video, timed with (2)
         #   (4) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/final_results_approach4_1000_10"
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/wed_oct_4/<insert_log_dir>"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
@@ -79,7 +79,7 @@ class CustomModel(CalvinBaseModel):
         # Other necessary variables for running rollouts
         self.goal_image = None
         self.subgoal_counter = 0
-        self.subgoal_max = 10
+        self.subgoal_max = 20
         self.pbar = None
 
     def reset(self):

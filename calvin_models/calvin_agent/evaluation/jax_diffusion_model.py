@@ -8,9 +8,10 @@ class DiffusionModel:
         initialize_compilation_cache()
 
         self.sample_fn = create_sample_fn(
-            "/nfs/kun2/users/pranav/calvin-sim/calvin_models/calvin_agent/evaluation/downloads/params_ema",
-            "kvablack/dlimp-diffusion/2t7oz1y7",
-            num_timesteps=50,
+            #"/nfs/kun2/users/pranav/calvin-sim/calvin_models/calvin_agent/evaluation/downloads/params_ema",
+            "/nfs/kun2/users/pranav/checkpoints/instruct_calvin_jax_trained_longer/params_ema",
+            "kvablack/dlimp-diffusion/80v0tdx2",
+            num_timesteps=200,
             prompt_w=7.5,
             context_w=1.5,
             eta=0.0,
@@ -21,7 +22,7 @@ class DiffusionModel:
         # Resize image to 256x256
         image_obs = np.array(Image.fromarray(image_obs).resize((256, 256))).astype(np.uint8)
 
-        sample = self.sample_fn(image_obs, language_command, prompt_w=7.5, context_w=1.0)
+        sample = self.sample_fn(image_obs, language_command, prompt_w=7.5, context_w=1.5)
         return np.array(Image.fromarray(sample).resize((200, 200))).astype(np.uint8)
 
 if __name__ == "__main__":

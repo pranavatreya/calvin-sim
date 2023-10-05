@@ -1,0 +1,10 @@
+[
+    "move_slider_right",
+    "turn_on_lightbulb",
+    "close_drawer",
+    "turn_on_led",
+    "turn_off_lightbulb",
+    "turn_off_led",
+    "open_drawer",
+    "move_slider_left"
+]

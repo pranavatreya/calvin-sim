@@ -112,11 +112,13 @@ class GCPolicy:
             **agent_kwargs,
         )
 
-        print("Loading checkpoint...") 
+        print("Loading checkpoint...")
+        resume_path = "/nfs/kun2/users/pranav/checkpoints/true_gc/checkpoint_48000"
+        #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/true_goal_reaching_20230928_071940/checkpoint_48000/"
         #resume_path = "/nfs/kun2/users/pranav/checkpoints/checkpoint_104000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/second_one_step_policy_20230926_172301/checkpoint_104000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/smaller_resnet_20230925_151415/checkpoint_56000/"
-        resume_path = "/nfs/kun2/users/pranav/checkpoints/best_gc_policy/checkpoint_70000/"
+        #resume_path = "/nfs/kun2/users/pranav/checkpoints/best_gc_policy/checkpoint_70000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/gcbc_on_full_goals_0_to_24_no_norm_20230925_140622/checkpoint_70000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/gcbc_on_lcbc_goals_0_to_24_no_norm_20230925_135330/checkpoint_48000/"
         #resume_path = "gs://rail-tpus-pranav/log/jaxrl_m_calvin_gcbc/silver_ticket_20230925_021808/checkpoint_30000/"
