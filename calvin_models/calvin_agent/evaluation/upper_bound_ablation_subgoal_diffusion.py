@@ -9,7 +9,8 @@ import requests
 import json
 import cv2
 from tqdm import tqdm
-import diffusion_model
+import jax_diffusion_model
+import diffusion_gc_policy
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -41,7 +42,8 @@ from calvin_env.envs.play_table_env import get_env
 
 logger = logging.getLogger(__name__)
 
-EP_LEN = 150
+EP_LEN = 144
+TASK_ID = 0
 
 def make_env(dataset_path):
     val_folder = Path(dataset_path) / "validation"
@@ -55,18 +57,17 @@ def make_env(dataset_path):
 class CustomModel(CalvinBaseModel):
     def __init__(self):
         # Initialize diffusion model
-        self.diffusion_model = diffusion_model.DiffusionModel()
+        self.diffusion_model = jax_diffusion_model.DiffusionModel()
 
         # Initialize GCBC
-        import gc_policy
-        self.gc_policy = gc_policy.GCPolicy()
+        self.gc_policy = diffusion_gc_policy.GCPolicy()
 
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
         #   (3) sequence of diffusion model generations also as a video, timed with (2)
         #   (4) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/upper_bound_ablation_subgoal_diffusion_25/task0"
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/diffusion_policy_experiments/oracle_gcbc_subgoal_diffusion/task" + str(TASK_ID)
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
@@ -131,6 +132,9 @@ class CustomModel(CalvinBaseModel):
             self.goal_image = None
             self.combined_images = []
             self.subgoal_counter = 0
+
+            # Reset the diffusion policy
+            self.gc_policy.reset()
 
         # tqdm progress bar
         if self.pbar is not None:
@@ -202,11 +206,15 @@ def evaluate_policy(model, env, epoch=0, eval_log_dir=None, debug=False, create_
     task_state_assignments = json.load(task_state_assignments_f)
     task_state_assignments_f.close()
 
+    # Load the subtask names
+    filtered_subtasks_f = open("/nfs/kun2/users/pranav/calvin-sim/filtered_subtasks.json")
+    filtered_subtasks = json.load(filtered_subtasks_f)
+    filtered_subtasks_f.close()
+
     # Evaluate on task
-    task = "move_slider_right"
+    task = filtered_subtasks[TASK_ID]
     start_goal_pairs = task_state_assignments[task]
 
-    # Choose 10 random start-goal pairs
     import random
     random.seed(42)
     random.shuffle(start_goal_pairs)
@@ -223,18 +231,13 @@ def evaluate_policy(model, env, epoch=0, eval_log_dir=None, debug=False, create_
     print("###################")
     print(num_successes, "out of 25 succeeded")
 
-    exit() # lol
+    exit()
 
 
 def evaluate_sequence(env, model, task_checker, initial_state, eval_sequence, val_annotations, plans, debug):
     """
     Evaluates a sequence of language instructions.
     """
-    #print("###########")
-    #print(type(initial_state))
-    #print(initial_state.keys())
-    #print(initial_state)
-    #initial_state["drawer"] = "open"
     robot_obs, scene_obs = get_env_state_for_initial_condition(initial_state)
     env.reset(robot_obs=robot_obs, scene_obs=scene_obs)
 

@@ -9,8 +9,10 @@ class DiffusionModel:
 
         self.sample_fn = create_sample_fn(
             #"/nfs/kun2/users/pranav/calvin-sim/calvin_models/calvin_agent/evaluation/downloads/params_ema",
-            "/nfs/kun2/users/pranav/checkpoints/instruct_calvin_jax_trained_longer/params_ema",
-            "kvablack/dlimp-diffusion/80v0tdx2",
+            #"/nfs/kun2/users/pranav/checkpoints/instruct_calvin_jax_trained_longer/params_ema",
+            #"/nfs/kun2/users/pranav/checkpoints/oct_6_jax_models/model_1/params_ema",
+            "/nfs/kun2/users/pranav/checkpoints/oct_6_jax_models/model_2/params_ema",
+            "kvablack/dlimp-diffusion/9n9ped8m",
             num_timesteps=200,
             prompt_w=7.5,
             context_w=1.5,

@@ -9,7 +9,7 @@ import requests
 import json
 import cv2
 from tqdm import tqdm
-import lc_policy
+import diffusion_lc_policy
 
 # This is for using the locally installed repo clone when using slurm
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
@@ -57,13 +57,13 @@ def make_env(dataset_path):
 class CustomModel(CalvinBaseModel):
     def __init__(self):
         # Initialize LCBC
-        self.lc_policy = lc_policy.LCPolicy()
+        self.lc_policy = diffusion_lc_policy.LCPolicy()
 
         # For each eval episode we need to log the following:
         #   (1) language task
         #   (2) sequence of image observations as a video
         #   (3) sequence of actions as numpy array
-        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/final_lcbc"
+        self.log_dir = "/nfs/kun2/users/pranav/calvin-sim/experiments/diffusion_policy_experiments/lcbc"
         self.episode_counter = None
         self.language_task = None
         self.obs_image_seq = None
@@ -99,6 +99,9 @@ class CustomModel(CalvinBaseModel):
             self.episode_counter += 1
             self.obs_image_seq = []
             self.action_seq = []
+
+            # Reset the lc policy
+            self.lc_policy.reset()
 
         # tqdm progress bar
         if self.pbar is not None:
@@ -180,11 +183,6 @@ def evaluate_sequence(env, model, task_checker, initial_state, eval_sequence, va
     """
     Evaluates a sequence of language instructions.
     """
-    #print("###########")
-    #print(type(initial_state))
-    #print(initial_state.keys())
-    #print(initial_state)
-    #initial_state["drawer"] = "open"
     robot_obs, scene_obs = get_env_state_for_initial_condition(initial_state)
     env.reset(robot_obs=robot_obs, scene_obs=scene_obs)
 
